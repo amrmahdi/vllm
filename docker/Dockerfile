@@ -13,33 +13,15 @@ ARG PYTHON_VERSION=3.12
 # private registries that use a different repository naming conventions.
 #
 # Example:
-# docker build --build-arg BUILD_BASE_IMAGE=registry.acme.org/mirror/nvidia/cuda:${CUDA_VERSION}-devel-ubuntu20.04
+# docker build --build-arg BUILD_BASE_IMAGE=registry.acme.org/mirror/vllm-build-base:cuda12.9-ubuntu22.04-py3.12
 
-# Important: We build with an old version of Ubuntu to maintain broad
-# compatibility with other Linux OSes. The main reason for this is that the
-# glibc version is baked into the distro, and binaries built with one glibc
-# version are not backwards compatible with OSes that use an earlier version.
-ARG BUILD_BASE_IMAGE=nvidia/cuda:${CUDA_VERSION}-devel-ubuntu20.04
-# Using cuda base image with minimal dependencies necessary for JIT compilation (FlashInfer, DeepGEMM, EP kernels)
-ARG FINAL_BASE_IMAGE=nvidia/cuda:${CUDA_VERSION}-base-ubuntu22.04
-
-# By parameterizing the Deadsnakes repository URL, we allow third-party to use
-# their own mirror. When doing so, we don't benefit from the transparent
-# installation of the GPG key of the PPA, as done by add-apt-repository, so we
-# also need a URL for the GPG key.
-ARG DEADSNAKES_MIRROR_URL
-ARG DEADSNAKES_GPGKEY_URL
-
-# The PyPA get-pip.py script is a self contained script+zip file, that provides
-# both the installer script and the pip base85-encoded zip archive. This allows
-# bootstrapping pip in environment where a dsitribution package does not exist.
-#
-# By parameterizing the URL for get-pip.py installation script, we allow
-# third-party to use their own copy of the script stored in a private mirror.
-# We set the default value to the PyPA owned get-pip.py script.
-#
-# Reference: https://pip.pypa.io/en/stable/installation/#get-pip-py
-ARG GET_PIP_URL="https://bootstrap.pypa.io/get-pip.py"
+# Pre-built build base image with Python, CUDA devel tools, uv, and PyTorch
+# Built from docker/Dockerfile.build-base - see .buildkite/pipeline-base-image.yaml
+# Fallback to nvidia/cuda devel image if not available
+ARG BUILD_BASE_IMAGE=public.ecr.aws/q9t5s3a7/vllm-build-base:cuda12.9-ubuntu22.04-py3.12
+# Pre-built runtime base image with Python, minimal CUDA tools, PyTorch, and FlashInfer
+# Built from docker/Dockerfile.runtime-base - see .buildkite/pipeline-base-image.yaml
+ARG FINAL_BASE_IMAGE=public.ecr.aws/q9t5s3a7/vllm-runtime-base:cuda12.9-ubuntu22.04-py3.12
 
 # PIP supports fetching the packages from custom indexes, allowing third-party
 # to host the packages in private mirrors. The PIP_INDEX_URL and
@@ -79,33 +61,8 @@ ARG TARGETPLATFORM
 ARG INSTALL_KV_CONNECTORS=false
 ENV DEBIAN_FRONTEND=noninteractive
 
-ARG GET_PIP_URL
-
-# Install system dependencies and uv, then create Python virtual environment
-RUN echo 'tzdata tzdata/Areas select America' | debconf-set-selections \
-    && echo 'tzdata tzdata/Zones/America select Los_Angeles' | debconf-set-selections \
-    && apt-get update -y \
-    && apt-get install -y --no-install-recommends \
-        ccache \
-        software-properties-common \
-        git \
-        curl \
-        sudo \
-        python3-pip \
-        libibverbs-dev \
-        # Upgrade to GCC 10 to avoid https://gcc.gnu.org/bugzilla/show_bug.cgi?id=92519
-        # as it was causing spam when compiling the CUTLASS kernels
-        gcc-10 \
-        g++-10 \
-    && update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-10 110 --slave /usr/bin/g++ g++ /usr/bin/g++-10 \
-    && rm -rf /var/lib/apt/lists/* \
-    && curl -LsSf https://astral.sh/uv/install.sh | sh \
-    && $HOME/.local/bin/uv venv /opt/venv --python ${PYTHON_VERSION} \
-    && rm -f /usr/bin/python3 /usr/bin/python3-config /usr/bin/pip \
-    && ln -s /opt/venv/bin/python3 /usr/bin/python3 \
-    && ln -s /opt/venv/bin/python3-config /usr/bin/python3-config \
-    && ln -s /opt/venv/bin/pip /usr/bin/pip \
-    && python3 --version && python3 -m pip --version
+# Base image already has: Python, uv, venv, PyTorch, gcc-10, ccache, build tools
+# See docker/Dockerfile.build-base for what's pre-installed
 
 ARG PIP_INDEX_URL UV_INDEX_URL
 ARG PIP_EXTRA_INDEX_URL UV_EXTRA_INDEX_URL
@@ -116,38 +73,20 @@ ARG PIP_KEYRING_PROVIDER UV_KEYRING_PROVIDER
 ENV PATH="/opt/venv/bin:/root/.local/bin:$PATH"
 ENV VIRTUAL_ENV="/opt/venv"
 
-# This timeout (in seconds) is necessary when installing some dependencies via uv since it's likely to time out
-# Reference: https://github.com/astral-sh/uv/pull/1694
+# uv settings (already set in base but redeclare for clarity)
 ENV UV_HTTP_TIMEOUT=500
 ENV UV_INDEX_STRATEGY="unsafe-best-match"
-# Use copy mode to avoid hardlink failures with Docker cache mounts
 ENV UV_LINK_MODE=copy
-
-RUN <<EOF
-gcc --version
-EOF
-
-# Workaround for https://github.com/openai/triton/issues/2507 and
-# https://github.com/pytorch/pytorch/issues/107960 -- hopefully
-# this won't be needed for future versions of this docker image
-# or future versions of triton.
-RUN ldconfig /usr/local/cuda-$(echo $CUDA_VERSION | cut -d. -f1,2)/compat/
 
 WORKDIR /workspace
 
-# install build and runtime dependencies
+# Copy requirements files (needed by setup.py, already installed in base image)
 COPY requirements/common.txt requirements/common.txt
 COPY requirements/cuda.txt requirements/cuda.txt
-RUN --mount=type=cache,target=/root/.cache/uv \
-    uv pip install --python /opt/venv/bin/python3 -r requirements/cuda.txt \
-    --extra-index-url ${PYTORCH_CUDA_INDEX_BASE_URL}/cu$(echo $CUDA_VERSION | cut -d. -f1,2 | tr -d '.')
 
 # cuda arch list used by torch
-# can be useful for both `dev` and `test`
-# explicitly set the list to avoid issues with torch 2.2
-# see https://github.com/pytorch/pytorch/pull/123243
-ARG torch_cuda_arch_list='7.0 7.5 8.0 8.9 9.0 10.0 12.0'
-ENV TORCH_CUDA_ARCH_LIST=${torch_cuda_arch_list}
+ARG TORCH_CUDA_ARCH_LIST='7.0 7.5 8.0 8.9 9.0 10.0 12.0'
+ENV TORCH_CUDA_ARCH_LIST=${TORCH_CUDA_ARCH_LIST}
 #################### BASE BUILD IMAGE ####################
 
 #################### CSRC BUILD IMAGE ####################
@@ -181,11 +120,11 @@ COPY vllm/envs.py vllm/envs.py
 COPY vllm/__init__.py vllm/__init__.py
 
 # max jobs used by Ninja to build extensions
-ARG max_jobs=2
-ENV MAX_JOBS=${max_jobs}
+ARG MAX_JOBS=2
+ENV MAX_JOBS=${MAX_JOBS}
 # number of threads used by nvcc
-ARG nvcc_threads=8
-ENV NVCC_THREADS=$nvcc_threads
+ARG NVCC_THREADS=8
+ENV NVCC_THREADS=${NVCC_THREADS}
 
 ARG USE_SCCACHE
 ARG SCCACHE_DOWNLOAD_URL=https://github.com/mozilla/sccache/releases/download/v0.8.1/sccache-v0.8.1-x86_64-unknown-linux-musl.tar.gz
@@ -241,6 +180,59 @@ RUN --mount=type=cache,target=/root/.cache/ccache \
     fi
 #################### CSRC BUILD IMAGE ####################
 
+#################### EXTENSIONS BUILD IMAGE ####################
+# Build DeepGEMM, pplx-kernels, DeepEP - runs in PARALLEL with csrc-build
+# This stage is independent and doesn't affect csrc cache
+FROM base AS extensions-build
+ARG CUDA_VERSION
+
+# This timeout (in seconds) is necessary when installing some dependencies via uv since it's likely to time out
+ENV UV_HTTP_TIMEOUT=500
+ENV UV_INDEX_STRATEGY="unsafe-best-match"
+ENV UV_LINK_MODE=copy
+
+WORKDIR /workspace
+
+# Build DeepGEMM wheel
+ARG DEEPGEMM_GIT_REF
+COPY tools/install_deepgemm.sh /tmp/install_deepgemm.sh
+RUN --mount=type=cache,target=/root/.cache/uv \
+    mkdir -p /tmp/deepgemm/dist && \
+    VLLM_DOCKER_BUILD_CONTEXT=1 TORCH_CUDA_ARCH_LIST="9.0a 10.0a" /tmp/install_deepgemm.sh \
+        --cuda-version "${CUDA_VERSION}" \
+        ${DEEPGEMM_GIT_REF:+--ref "$DEEPGEMM_GIT_REF"} \
+        --wheel-dir /tmp/deepgemm/dist || \
+    echo "DeepGEMM build skipped (CUDA version requirement not met)"
+
+# Ensure the wheel dir exists so COPY won't fail when DeepGEMM is skipped
+RUN mkdir -p /tmp/deepgemm/dist && touch /tmp/deepgemm/dist/.deepgemm_skipped
+
+# Build pplx-kernels and DeepEP wheels
+COPY tools/ep_kernels/install_python_libraries.sh /tmp/install_python_libraries.sh
+ARG PPLX_COMMIT_HASH
+ARG DEEPEP_COMMIT_HASH
+RUN --mount=type=cache,target=/root/.cache/uv \
+    mkdir -p /tmp/ep_kernels_workspace/dist && \
+    export TORCH_CUDA_ARCH_LIST='9.0a 10.0a' && \
+    /tmp/install_python_libraries.sh \
+        --workspace /tmp/ep_kernels_workspace \
+        --mode wheel \
+        ${PPLX_COMMIT_HASH:+--pplx-ref "$PPLX_COMMIT_HASH"} \
+        ${DEEPEP_COMMIT_HASH:+--deepep-ref "$DEEPEP_COMMIT_HASH"} && \
+    find /tmp/ep_kernels_workspace/nvshmem -name '*.a' -delete
+#################### EXTENSIONS BUILD IMAGE ####################
+
+#################### COMPILED WHEELS (minimal cache layer) ####################
+# FROM scratch creates a tiny layer with ONLY the compiled artifacts
+# This makes cache extraction fast (~150MB vs multi-GB build layers)
+# Contains: csrc wheel + extension wheels (deepgemm, pplx, deepep) + nvshmem
+FROM scratch AS compiled-wheels
+COPY --from=csrc-build /workspace/dist/*.whl /csrc/
+COPY --from=extensions-build /tmp/deepgemm/dist/*.whl /extensions/
+COPY --from=extensions-build /tmp/ep_kernels_workspace/dist/*.whl /extensions/
+COPY --from=extensions-build /tmp/ep_kernels_workspace/nvshmem /nvshmem/
+#################### COMPILED WHEELS ####################
+
 #################### WHEEL BUILD IMAGE ####################
 FROM base AS build
 ARG TARGETPLATFORM
@@ -265,7 +257,11 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 
 WORKDIR /workspace
 
-COPY --from=csrc-build /workspace/dist /precompiled-wheels
+# Copy all pre-built artifacts from minimal cache layer
+# This is FAST because compiled-wheels is a tiny FROM scratch layer (~200MB)
+COPY --from=compiled-wheels /csrc /precompiled-wheels
+COPY --from=compiled-wheels /extensions /tmp/extension-wheels
+COPY --from=compiled-wheels /nvshmem /tmp/ep_kernels_workspace/nvshmem
 
 COPY . .
 
@@ -286,27 +282,11 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     fi && \
     python3 setup.py bdist_wheel --dist-dir=dist --py-limited-api=cp38
 
-# Install DeepGEMM from source
-ARG DEEPGEMM_GIT_REF
-COPY tools/install_deepgemm.sh /tmp/install_deepgemm.sh
-RUN --mount=type=cache,target=/root/.cache/uv \
-    VLLM_DOCKER_BUILD_CONTEXT=1 TORCH_CUDA_ARCH_LIST="9.0a 10.0a" /tmp/install_deepgemm.sh --cuda-version "${CUDA_VERSION}" ${DEEPGEMM_GIT_REF:+--ref "$DEEPGEMM_GIT_REF"} --wheel-dir /tmp/deepgemm/dist
-
-# Ensure the wheel dir exists so later-stage COPY won't fail when DeepGEMM is skipped
-RUN mkdir -p /tmp/deepgemm/dist && touch /tmp/deepgemm/dist/.deepgemm_skipped
-
-COPY tools/ep_kernels/install_python_libraries.sh /tmp/install_python_libraries.sh
-# Install EP kernels(pplx-kernels and DeepEP)
-ARG PPLX_COMMIT_HASH
-ARG DEEPEP_COMMIT_HASH
-RUN --mount=type=cache,target=/root/.cache/uv \
-    export TORCH_CUDA_ARCH_LIST='9.0a 10.0a' && \
-    /tmp/install_python_libraries.sh \
-        --workspace /tmp/ep_kernels_workspace \
-        --mode wheel \
-        ${PPLX_COMMIT_HASH:+--pplx-ref "$PPLX_COMMIT_HASH"} \
-        ${DEEPEP_COMMIT_HASH:+--deepep-ref "$DEEPEP_COMMIT_HASH"} && \
-    find /tmp/ep_kernels_workspace/nvshmem -name '*.a' -delete
+# Organize wheels into expected locations for later stages
+RUN mkdir -p /tmp/deepgemm/dist /tmp/ep_kernels_workspace/dist && \
+    cp /tmp/extension-wheels/deep_gemm*.whl /tmp/deepgemm/dist/ 2>/dev/null || touch /tmp/deepgemm/dist/.deepgemm_skipped && \
+    cp /tmp/extension-wheels/pplx_kernels*.whl /tmp/ep_kernels_workspace/dist/ && \
+    cp /tmp/extension-wheels/deep_ep*.whl /tmp/ep_kernels_workspace/dist/
 
 # Check the size of the wheel if RUN_WHEEL_CHECK is true
 COPY .buildkite/check-wheel-size.py check-wheel-size.py
@@ -355,111 +335,24 @@ WORKDIR /vllm-workspace
 ENV DEBIAN_FRONTEND=noninteractive
 ARG TARGETPLATFORM
 
-# TODO (huydhn): There is no prebuilt gdrcopy package on 12.9 at the moment
-ARG GDRCOPY_CUDA_VERSION=12.8
-# Keep in line with FINAL_BASE_IMAGE
-ARG GDRCOPY_OS_VERSION=Ubuntu22_04
-
 SHELL ["/bin/bash", "-c"]
-
-ARG DEADSNAKES_MIRROR_URL
-ARG DEADSNAKES_GPGKEY_URL
-ARG GET_PIP_URL
 
 RUN PYTHON_VERSION_STR=$(echo ${PYTHON_VERSION} | sed 's/\.//g') && \
     echo "export PYTHON_VERSION_STR=${PYTHON_VERSION_STR}" >> /etc/environment
 
-# Install Python and other dependencies
-RUN echo 'tzdata tzdata/Areas select America' | debconf-set-selections \
-    && echo 'tzdata tzdata/Zones/America select Los_Angeles' | debconf-set-selections \
-    && apt-get update -y \
-    && apt-get install -y --no-install-recommends \
-        software-properties-common \
-        curl \
-        sudo \
-        python3-pip \
-        ffmpeg \
-        libsm6 \
-        libxext6 \
-        libgl1 \
-    && if [ ! -z ${DEADSNAKES_MIRROR_URL} ] ; then \
-        if [ ! -z "${DEADSNAKES_GPGKEY_URL}" ] ; then \
-            mkdir -p -m 0755 /etc/apt/keyrings ; \
-            curl -L ${DEADSNAKES_GPGKEY_URL} | gpg --dearmor > /etc/apt/keyrings/deadsnakes.gpg ; \
-            sudo chmod 644 /etc/apt/keyrings/deadsnakes.gpg ; \
-            echo "deb [signed-by=/etc/apt/keyrings/deadsnakes.gpg] ${DEADSNAKES_MIRROR_URL} $(lsb_release -cs) main" > /etc/apt/sources.list.d/deadsnakes.list ; \
-        fi ; \
-    else \
-        for i in 1 2 3; do \
-            add-apt-repository -y ppa:deadsnakes/ppa && break || \
-            { echo "Attempt $i failed, retrying in 5s..."; sleep 5; }; \
-        done ; \
-    fi \
-    && apt-get update -y \
-    && apt-get install -y --no-install-recommends \
-        python${PYTHON_VERSION} \
-        python${PYTHON_VERSION}-dev \
-        python${PYTHON_VERSION}-venv \
-        libibverbs-dev \
-    && rm -rf /var/lib/apt/lists/* \
-    && update-alternatives --install /usr/bin/python3 python3 /usr/bin/python${PYTHON_VERSION} 1 \
-    && update-alternatives --set python3 /usr/bin/python${PYTHON_VERSION} \
-    && ln -sf /usr/bin/python${PYTHON_VERSION}-config /usr/bin/python3-config \
-    && curl -sS ${GET_PIP_URL} | python${PYTHON_VERSION} \
-    && python3 --version && python3 -m pip --version
-
-# Install CUDA development tools and build essentials for runtime JIT compilation
-# (FlashInfer, DeepGEMM, EP kernels all require compilation at runtime)
-RUN CUDA_VERSION_DASH=$(echo $CUDA_VERSION | cut -d. -f1,2 | tr '.' '-') && \
-    apt-get update -y && \
-    apt-get install -y --no-install-recommends \
-    cuda-nvcc-${CUDA_VERSION_DASH} \
-    cuda-cudart-${CUDA_VERSION_DASH} \
-    cuda-nvrtc-${CUDA_VERSION_DASH} \
-    cuda-cuobjdump-${CUDA_VERSION_DASH} \
-    # https://github.com/vllm-project/vllm/issues/29590
-    libcurand-dev-${CUDA_VERSION_DASH} \
-    libcublas-${CUDA_VERSION_DASH} \
-    # Fixes nccl_allocator requiring nccl.h at runtime
-    # https://github.com/vllm-project/vllm/blob/1336a1ea244fa8bfd7e72751cabbdb5b68a0c11a/vllm/distributed/device_communicators/pynccl_allocator.py#L22
-    libnccl-dev && \
-    rm -rf /var/lib/apt/lists/*
+# Python, CUDA tools, uv, and FlashInfer are pre-installed in FINAL_BASE_IMAGE
+# See docker/Dockerfile.base for what's included
 
 ARG PIP_INDEX_URL UV_INDEX_URL
 ARG PIP_EXTRA_INDEX_URL UV_EXTRA_INDEX_URL
 ARG PYTORCH_CUDA_INDEX_BASE_URL
 ARG PIP_KEYRING_PROVIDER UV_KEYRING_PROVIDER
 
-# Install uv for faster pip installs
-RUN --mount=type=cache,target=/root/.cache/uv \
-    python3 -m pip install uv
-
-# This timeout (in seconds) is necessary when installing some dependencies via uv since it's likely to time out
-# Reference: https://github.com/astral-sh/uv/pull/1694
-ENV UV_HTTP_TIMEOUT=500
-ENV UV_INDEX_STRATEGY="unsafe-best-match"
-# Use copy mode to avoid hardlink failures with Docker cache mounts
-ENV UV_LINK_MODE=copy
-
-# Workaround for https://github.com/openai/triton/issues/2507 and
-# https://github.com/pytorch/pytorch/issues/107960 -- hopefully
-# this won't be needed for future versions of this docker image
-# or future versions of triton.
-RUN ldconfig /usr/local/cuda-$(echo $CUDA_VERSION | cut -d. -f1,2)/compat/
-
 # Install vllm wheel first, so that torch etc will be installed.
 RUN --mount=type=bind,from=build,src=/workspace/dist,target=/vllm-workspace/dist \
     --mount=type=cache,target=/root/.cache/uv \
     uv pip install --system dist/*.whl --verbose \
         --extra-index-url ${PYTORCH_CUDA_INDEX_BASE_URL}/cu$(echo $CUDA_VERSION | cut -d. -f1,2 | tr -d '.')
-
-# Install FlashInfer pre-compiled kernel cache and binaries
-# https://docs.flashinfer.ai/installation.html
-RUN --mount=type=cache,target=/root/.cache/uv \
-    uv pip install --system flashinfer-cubin==0.5.3 \
-    && uv pip install --system flashinfer-jit-cache==0.5.3 \
-        --extra-index-url https://flashinfer.ai/whl/cu$(echo $CUDA_VERSION | cut -d. -f1,2 | tr -d '.') \
-    && flashinfer show-config
 
 COPY examples examples
 COPY benchmarks benchmarks
@@ -487,14 +380,7 @@ RUN --mount=type=bind,from=build,src=/tmp/ep_kernels_workspace/dist,target=/vllm
     uv pip install --system ep_kernels/dist/*.whl --verbose \
         --extra-index-url ${PYTORCH_CUDA_INDEX_BASE_URL}/cu$(echo $CUDA_VERSION | cut -d. -f1,2 | tr -d '.')
 
-RUN --mount=type=bind,source=tools/install_gdrcopy.sh,target=/tmp/install_gdrcopy.sh,ro \
-    set -eux; \
-    case "${TARGETPLATFORM}" in \
-      linux/arm64) UUARCH="aarch64" ;; \
-      linux/amd64) UUARCH="x64" ;; \
-      *) echo "Unsupported TARGETPLATFORM: ${TARGETPLATFORM}" >&2; exit 1 ;; \
-    esac; \
-    /tmp/install_gdrcopy.sh "${GDRCOPY_OS_VERSION}" "${GDRCOPY_CUDA_VERSION}" "${UUARCH}"
+# gdrcopy is pre-installed in runtime-base image
 
 # CUDA image changed from /usr/local/nvidia to /usr/local/cuda in 12.8 but will
 # return to /usr/local/nvidia in 13.0 to allow container providers to mount drivers
@@ -569,18 +455,12 @@ ARG PIP_EXTRA_INDEX_URL UV_EXTRA_INDEX_URL
 # Reference: https://github.com/astral-sh/uv/pull/1694
 ENV UV_HTTP_TIMEOUT=500
 
-# install additional dependencies for openai api server
+# install kv_connectors if requested (openai deps are pre-installed in runtime-base)
 RUN --mount=type=cache,target=/root/.cache/uv \
     --mount=type=bind,source=requirements/kv_connectors.txt,target=/tmp/kv_connectors.txt,ro \
     if [ "$INSTALL_KV_CONNECTORS" = "true" ]; then \
         uv pip install --system -r /tmp/kv_connectors.txt; \
-    fi; \
-    if [ "$TARGETPLATFORM" = "linux/arm64" ]; then \
-        BITSANDBYTES_VERSION="0.42.0"; \
-    else \
-        BITSANDBYTES_VERSION="0.46.1"; \
-    fi; \
-    uv pip install --system accelerate hf_transfer modelscope "bitsandbytes>=${BITSANDBYTES_VERSION}" 'timm>=1.0.17' 'runai-model-streamer[s3,gcs]>=0.15.3'
+    fi
 
 ENV VLLM_USAGE_SOURCE production-docker-image
 
