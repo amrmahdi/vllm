@@ -448,6 +448,9 @@ ENV UV_LINK_MODE=copy
 # Workaround for triton/pytorch issues
 RUN ldconfig /usr/local/cuda-$(echo $CUDA_VERSION | cut -d. -f1,2)/compat/
 
+# Set CUDA_HOME for packages that need to build CUDA extensions from source
+ENV CUDA_HOME=/usr/local/cuda
+
 # ============================================================
 # SLOW-CHANGING DEPENDENCIES BELOW
 # These are the expensive layers that we want to cache
