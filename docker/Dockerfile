@@ -568,8 +568,6 @@ COPY ./vllm/collect_env.py .
 # note that this uses vllm installed by `pip`
 FROM vllm-base AS test
 
-ADD . /vllm-workspace/
-
 ARG PYTHON_VERSION
 
 ARG PIP_INDEX_URL UV_INDEX_URL
@@ -583,27 +581,39 @@ ENV UV_INDEX_STRATEGY="unsafe-best-match"
 # Use copy mode to avoid hardlink failures with Docker cache mounts
 ENV UV_LINK_MODE=copy
 
-RUN echo 'tzdata tzdata/Areas select America' | debconf-set-selections \
-    && echo 'tzdata tzdata/Zones/America select Los_Angeles' | debconf-set-selections \
-    && apt-get update -y \
-    && apt-get install -y git
+# Install git (not included in vllm-base)
+RUN apt-get update -y \
+    && apt-get install -y --no-install-recommends git \
+    && rm -rf /var/lib/apt/lists/*
 
-# install development dependencies (for testing)
+# Copy only requirements files first (changes less frequently than source code)
+COPY requirements/dev.txt /tmp/requirements/dev.txt
+COPY requirements/lint.txt /tmp/requirements/lint.txt
+COPY requirements/test.txt /tmp/requirements/test.txt
+
+# Copy tests/vllm_test_utils for editable install (changes less frequently)
+COPY tests/vllm_test_utils /tmp/tests/vllm_test_utils
+
+# Install development dependencies (for testing) - this layer is now cached
+# independently of source code changes
 RUN --mount=type=cache,target=/root/.cache/uv \
     CUDA_MAJOR="${CUDA_VERSION%%.*}"; \
     if [ "$CUDA_MAJOR" -ge 12 ]; then \
-        uv pip install --system -r requirements/dev.txt \
+        uv pip install --system -r /tmp/requirements/dev.txt \
         --extra-index-url ${PYTORCH_CUDA_INDEX_BASE_URL}/cu$(echo $CUDA_VERSION | cut -d. -f1,2 | tr -d '.'); \
     fi
 
-# install development dependencies (for testing)
+# Install test utilities
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv pip install --system -e tests/vllm_test_utils
+    uv pip install --system -e /tmp/tests/vllm_test_utils
 
-# enable fast downloads from hf (for testing)
+# Enable fast downloads from hf (for testing)
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv pip install --system hf_transfer
 ENV HF_HUB_ENABLE_HF_TRANSFER 1
+
+# NOW copy the full source - changes to source code only invalidate layers below this
+ADD . /vllm-workspace/
 
 # Copy in the v1 package for testing (it isn't distributed yet)
 COPY vllm/v1 /usr/local/lib/python${PYTHON_VERSION}/dist-packages/vllm/v1
