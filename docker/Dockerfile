@@ -303,7 +303,10 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 WORKDIR /workspace
 
 # Copy pre-built csrc wheel directly
-COPY --from=csrc-build /workspace/dist /precompiled-wheels
+COPY --link --from=csrc-build /workspace/dist /precompiled-wheels
+# Copy extension wheels from extensions-build stage for later use
+COPY --link --from=extensions-build /tmp/deepgemm/dist /tmp/deepgemm/dist
+COPY --link --from=extensions-build /tmp/ep_kernels_workspace/dist /tmp/ep_kernels_workspace/dist
 
 COPY . .
 
@@ -323,10 +326,6 @@ RUN --mount=type=cache,target=/root/.cache/uv \
         export VLLM_PRECOMPILED_WHEEL_LOCATION=$(ls /precompiled-wheels/*.whl); \
     fi && \
     python3 setup.py bdist_wheel --dist-dir=dist --py-limited-api=cp38
-
-# Copy extension wheels from extensions-build stage for later use
-COPY --from=extensions-build /tmp/deepgemm/dist /tmp/deepgemm/dist
-COPY --from=extensions-build /tmp/ep_kernels_workspace/dist /tmp/ep_kernels_workspace/dist
 
 # Check the size of the wheel if RUN_WHEEL_CHECK is true
 COPY .buildkite/check-wheel-size.py check-wheel-size.py
