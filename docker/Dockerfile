@@ -278,6 +278,19 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     find /tmp/ep_kernels_workspace/nvshmem -name '*.a' -delete
 #################### EXTENSIONS BUILD IMAGE ####################
 
+#################### WHEELS-ONLY IMAGES ####################
+# Minimal scratch images containing only wheel files for faster COPY operations.
+# When cached in a registry, only the tiny wheel-containing layers need to be
+# pulled, not the full build stages with all the build tools and intermediate artifacts.
+
+FROM scratch AS csrc-wheels-only
+COPY --link --from=csrc-build /workspace/dist /dist
+
+FROM scratch AS extensions-wheels-only
+COPY --link --from=extensions-build /tmp/deepgemm/dist /deepgemm/dist
+COPY --link --from=extensions-build /tmp/ep_kernels_workspace/dist /ep_kernels/dist
+#################### WHEELS-ONLY IMAGES ####################
+
 #################### WHEEL BUILD IMAGE ####################
 FROM base AS build
 ARG TARGETPLATFORM
@@ -302,11 +315,10 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 
 WORKDIR /workspace
 
-# Copy pre-built csrc wheel directly
-COPY --link --from=csrc-build /workspace/dist /precompiled-wheels
-# Copy extension wheels from extensions-build stage for later use
-COPY --link --from=extensions-build /tmp/deepgemm/dist /tmp/deepgemm/dist
-COPY --link --from=extensions-build /tmp/ep_kernels_workspace/dist /tmp/ep_kernels_workspace/dist
+# Copy pre-built wheels from minimal scratch images (faster than copying from full build stages)
+COPY --link --from=csrc-wheels-only /dist /precompiled-wheels
+COPY --link --from=extensions-wheels-only /deepgemm/dist /tmp/deepgemm/dist
+COPY --link --from=extensions-wheels-only /ep_kernels/dist /tmp/ep_kernels_workspace/dist
 
 COPY . .
 
@@ -522,9 +534,9 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 . /etc/environment && \
 uv pip list
 
-# Install deepgemm wheel that has been built in the `build` stage
+# Install deepgemm wheel from wheels-only stage
 RUN --mount=type=cache,target=/root/.cache/uv \
-    --mount=type=bind,from=build,source=/tmp/deepgemm/dist,target=/tmp/deepgemm/dist,ro \
+    --mount=type=bind,from=extensions-wheels-only,source=/deepgemm/dist,target=/tmp/deepgemm/dist,ro \
     sh -c 'if ls /tmp/deepgemm/dist/*.whl >/dev/null 2>&1; then \
               uv pip install --system /tmp/deepgemm/dist/*.whl; \
            else \
@@ -534,8 +546,8 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 # Pytorch now installs NVSHMEM, setting LD_LIBRARY_PATH
 ENV LD_LIBRARY_PATH=/usr/local/cuda/lib64:$LD_LIBRARY_PATH
 
-# Install EP kernels wheels (pplx-kernels and DeepEP) that have been built in the `build` stage
-RUN --mount=type=bind,from=build,src=/tmp/ep_kernels_workspace/dist,target=/vllm-workspace/ep_kernels/dist \
+# Install EP kernels wheels (pplx-kernels and DeepEP) from wheels-only stage
+RUN --mount=type=bind,from=extensions-wheels-only,src=/ep_kernels/dist,target=/vllm-workspace/ep_kernels/dist \
     --mount=type=cache,target=/root/.cache/uv \
     uv pip install --system ep_kernels/dist/*.whl --verbose \
         --extra-index-url ${PYTORCH_CUDA_INDEX_BASE_URL}/cu$(echo $CUDA_VERSION | cut -d. -f1,2 | tr -d '.')
