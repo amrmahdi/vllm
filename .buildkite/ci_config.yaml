@@ -18,7 +18,7 @@ run_all_exclude_patterns:
   - "csrc/rocm/"
   - "cmake/hipify.py"
   - "cmake/cpu_extension.cmake"
-registries: public.ecr.aws/q9t5s3a7
+registries: 936637512419.dkr.ecr.us-east-1.amazonaws.com
 repositories:
   main: "vllm-ci-postmerge-repo"
-  premerge: "vllm-ci-test-repo"
+  premerge: "vllm-ci-test-repo-private"
