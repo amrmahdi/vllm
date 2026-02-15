@@ -247,6 +247,20 @@ fi
 
 setup_buildx_builder
 
+echo "--- :mag: Debug: Build context state"
+echo "PWD: $(pwd)"
+git status --short | head -20
+echo "Git HEAD: $(git rev-parse HEAD)"
+echo "Git dirty files count: $(git status --porcelain | wc -l)"
+if [ -d .git ]; then
+    echo ".git dir size: $(du -sh .git | cut -f1)"
+    echo ".git HEAD content: $(cat .git/HEAD)"
+    echo ".git index hash: $(sha256sum .git/index 2>/dev/null || echo 'no index')"
+fi
+echo "Source tree hash (excl .git): $(find . -not -path './.git/*' -not -path './.git' -type f | sort | head -100 | xargs sha256sum 2>/dev/null | sha256sum)"
+echo "Docker context file count: $(find . -not -path './.git/*' -not -path './.git' -type f | wc -l)"
+echo "BuildKit version: $(docker buildx version 2>/dev/null || echo unknown)"
+
 resolve_parent_commit
 export PARENT_COMMIT
 
