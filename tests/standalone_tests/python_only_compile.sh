@@ -4,9 +4,16 @@
 
 set -e
 
-merge_base_commit=$(git merge-base HEAD origin/main)
-echo "INFO: current merge base commit with main: $merge_base_commit"
-git show --oneline -s $merge_base_commit
+# Use VLLM_MERGE_BASE_COMMIT if set (e.g. in CI where .git may not be available),
+# otherwise fall back to computing it from git.
+if [ -n "${VLLM_MERGE_BASE_COMMIT}" ]; then
+    merge_base_commit="${VLLM_MERGE_BASE_COMMIT}"
+    echo "INFO: using provided VLLM_MERGE_BASE_COMMIT: $merge_base_commit"
+else
+    merge_base_commit=$(git merge-base HEAD origin/main)
+    echo "INFO: current merge base commit with main: $merge_base_commit"
+    git show --oneline -s $merge_base_commit
+fi
 
 # test whether the metadata.json url is valid, retry each 3 minutes up to 5 times
 # this avoids cumbersome error messages & manual retries in case the precompiled wheel

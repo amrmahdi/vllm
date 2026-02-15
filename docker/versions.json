@@ -58,8 +58,8 @@
     "DEEPEP_COMMIT_HASH": {
       "default": "73b6ea4"
     },
-    "GIT_REPO_CHECK": {
-      "default": "0"
+    "VLLM_VERSION_OVERRIDE": {
+      "default": "0.0.0+src.build"
     },
     "VLLM_MAX_SIZE_MB": {
       "default": "500"
