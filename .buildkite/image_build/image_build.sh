@@ -45,34 +45,16 @@ print_instance_info() {
 }
 
 setup_buildx_builder() {
-    echo "--- :buildkite: Setting up buildx builder"
-    if [[ -S "${BUILDKIT_SOCKET}" ]]; then
-        # Custom AMI with standalone buildkitd - use remote driver for warm cache
-        echo "✅ Found local buildkitd socket at ${BUILDKIT_SOCKET}"
-        echo "Using remote driver to connect to buildkitd (warm cache available)"
-        if docker buildx inspect baked-vllm-builder >/dev/null 2>&1; then
-            echo "Using existing baked-vllm-builder"
-            docker buildx use baked-vllm-builder
-        else
-            echo "Creating baked-vllm-builder with remote driver"
-            docker buildx create \
-                --name baked-vllm-builder \
-                --driver remote \
-                --use \
-                "unix://${BUILDKIT_SOCKET}"
-        fi
-        docker buildx inspect --bootstrap
-    elif docker buildx inspect "${BUILDER_NAME}" >/dev/null 2>&1; then
-        # Existing builder available
-        echo "Using existing builder: ${BUILDER_NAME}"
-        docker buildx use "${BUILDER_NAME}"
-        docker buildx inspect --bootstrap
-    else
-        # No local buildkitd, no existing builder - create new docker-container builder
-        echo "No local buildkitd found, using docker-container driver"
-        docker buildx create --name "${BUILDER_NAME}" --driver docker-container --use
-        docker buildx inspect --bootstrap
-    fi
+    # TEMPORARY: Using docker-container driver with BuildKit master to test
+    # parallel export (PR #6451) and parallel cache push (PR #6455)
+    echo "--- :buildkite: Setting up buildx builder (BuildKit master)"
+    docker buildx rm test-buildkit-master 2>/dev/null || true
+    docker buildx create \
+        --name test-buildkit-master \
+        --driver docker-container \
+        --driver-opt image=moby/buildkit:master \
+        --use
+    docker buildx inspect --bootstrap
 
     # builder info
     echo "Active builder:"
