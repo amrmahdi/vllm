@@ -62,15 +62,8 @@ setup_buildx_builder() {
 }
 
 check_and_skip_if_image_exists() {
-    if [[ -n "${IMAGE_TAG:-}" ]]; then
-        echo "--- :mag: Checking if image exists"
-        if docker manifest inspect "${IMAGE_TAG}" >/dev/null 2>&1; then
-            echo "Image already exists: ${IMAGE_TAG}"
-            echo "Skipping build"
-            exit 0
-        fi
-        echo "Image not found, proceeding with build"
-    fi
+    # Disabled for BuildKit testing
+    echo "--- :mag: Skipping image existence check (testing)"
 }
 
 ecr_login() {
