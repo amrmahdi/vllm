@@ -74,6 +74,11 @@ ARG UV_EXTRA_INDEX_URL=${PIP_EXTRA_INDEX_URL}
 # PyTorch provides its own indexes for standard and nightly builds
 ARG PYTORCH_CUDA_INDEX_BASE_URL=https://download.pytorch.org/whl
 
+# FlashInfer provides its own index for pre-compiled wheels per CUDA version.
+# Override to install from a private index (e.g., custom builds on pyx).
+# For authenticated indexes, mount a netrc secret (id=netrc).
+ARG FLASHINFER_INDEX_BASE_URL=https://flashinfer.ai/whl
+
 # PIP supports multiple authentication schemes, including keyring
 # By parameterizing the PIP_KEYRING_PROVIDER variable and setting it to
 # disabled by default, we allow third-party to use keyring authentication for
@@ -588,9 +593,10 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 # From versions.json: .flashinfer.version
 ARG FLASHINFER_VERSION=0.6.4
 RUN --mount=type=cache,target=/root/.cache/uv \
+    --mount=type=secret,id=netrc,target=/root/.netrc,required=false \
     uv pip install --system flashinfer-cubin==${FLASHINFER_VERSION} \
     && uv pip install --system flashinfer-jit-cache==${FLASHINFER_VERSION} \
-        --extra-index-url https://flashinfer.ai/whl/cu$(echo $CUDA_VERSION | cut -d. -f1,2 | tr -d '.') \
+        --extra-index-url ${FLASHINFER_INDEX_BASE_URL}/cu$(echo $CUDA_VERSION | cut -d. -f1,2 | tr -d '.') \
     && flashinfer show-config
 
 # ============================================================

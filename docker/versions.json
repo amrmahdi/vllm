@@ -19,6 +19,9 @@
     "PYTORCH_CUDA_INDEX_BASE_URL": {
       "default": "https://download.pytorch.org/whl"
     },
+    "FLASHINFER_INDEX_BASE_URL": {
+      "default": "https://flashinfer.ai/whl"
+    },
     "PIP_KEYRING_PROVIDER": {
       "default": "disabled"
     },
